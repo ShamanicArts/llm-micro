@@ -30,12 +30,14 @@ To install the `llm-micro` plugin, use Micro's standard plugin directory:
 This plugin provides two main commands, accessible via Micro's command prompt (`Ctrl+E`):
 
 
-https://github.com/user-attachments/assets/3b670332-30a1-4c35-8408-34c9f9d4fbe9
 
 
 
 
 ### 1. `llm_modify <your request>`
+
+https://github.com/user-attachments/assets/3b670332-30a1-4c35-8408-34c9f9d4fbe9
+
 
 This command modifies the currently selected text based on your instructions.
 
