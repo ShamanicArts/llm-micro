@@ -7,7 +7,7 @@ This plugin allows you to leverage Large Language Models directly within Micro f
 ## Prerequisites
 
 *   **Micro Text Editor:** Installed and working.
-*   **LLM CLI Tool:** Installed and configured (e.g., with API keys). See [LLM documentation](https://llm.datasette.io/en/stable/installation.html).
+*   **LLM CLI Tool:** Installed and configured (e.g., with API keys). See [LLM documentation](https://llm.datasette.io/en/stable/).
 
 ## Installation
 
