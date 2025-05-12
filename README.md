@@ -24,6 +24,12 @@ To install the `llm-micro` plugin, use Micro's standard plugin directory:
 
 ## Usage
 
+
+https://github.com/user-attachments/assets/a44f402a-405c-4997-b514-3136961bdcde
+
+
+
+
 This plugin provides commands accessible via Micro's command prompt (`Ctrl+E`):
 
 ### Core Command: `llm`
@@ -50,8 +56,7 @@ This is the primary command for interacting with an LLM. It intelligently adapts
     5.  (Optional) Add [options](#options-for-llm) like `-t <template_name>` or `-s "<custom system prompt>"` **before** your request.
     6.  Press Enter.
 
-*(Note: Previous videos showed separate `llm_modify` and `llm_generate` commands. These are now unified into `llm`.)*
-<https://github.com/user-attachments/assets/3b670332-30a1-4c35-8408-34c9f9d4fbe9> <!-- This video likely shows the old behavior -->
+
 
 #### Options for `llm`:
 
@@ -102,8 +107,7 @@ Manages the single default LLM template used by the `llm` command when no `-t` o
     *   Displays the currently set default template.
     *   Output will be shown in the infobar, e.g., `Default LLM template: my_universal_helper` or `Default LLM template: Not set`.
 
-*(Note: Previous video showed separate defaults for generate/modify. This is now unified.)*
-<https://github.com/user-attachments/assets/662329b7-95ad-48ec-b937-10d4b00c516c> <!-- This video likely shows the old behavior -->
+
 
 ## Configuration
 
