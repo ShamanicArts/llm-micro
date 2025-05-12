@@ -26,56 +26,48 @@ To install the `llm-micro` plugin, use Micro's standard plugin directory:
 
 This plugin provides commands accessible via Micro's command prompt (`Ctrl+E`):
 
-### Core Commands: `llm_modify` and `llm_generate`
+### Core Command: `llm`
 
-These commands allow you to interact with an LLM for text manipulation.
+This is the primary command for interacting with an LLM. It intelligently adapts its behavior based on whether text is selected.
 
-#### 1. `llm_modify [options] <your request>`
+*   **Syntax:** `llm [options] <your request>`
 
-<https://github.com/user-attachments/assets/3b670332-30a1-4c35-8408-34c9f9d4fbe9>
-
-This command modifies the currently selected text based on your instructions.
-
-*   **How to use:**
-    1.  Select the text you want to modify in Micro.
-    2.  Press `Ctrl+E` to open the command prompt.
-    3.  Type `llm_modify` followed by your specific request (e.g., `llm_modify fix grammar`, `llm_modify convert to uppercase`).
-    4.  (Optional) Add [options](#options-for-llm_modify-and-llm_generate) like `-t <template_name>` or `-s "<custom system prompt>"` before your request.
-    5.  Press Enter.
 *   **Behavior:**
-    *   The selected text, your request, and surrounding context are sent to the LLM.
-    *   The LLM's response replaces the originally selected text.
-    *   **An error will occur if no text is selected.**
-
-#### 2. `llm_generate [options] <your request>`
-
-This command generates new text based on your instructions and optional context.
+    *   **If text is selected:** The command operates in **"modify"** mode.
+        *   Your `<prompt>`, the selected text, and surrounding context are sent to the LLM.
+        *   The LLM's response **replaces** the originally selected text.
+        *   *Example:* Select faulty code, run `llm fix this code`.
+    *   **If NO text is selected:** The command operates in **"generate"** mode.
+        *   Your `<prompt>` and surrounding context are sent to the LLM.
+        *   The LLM's response is **inserted** at the cursor position.
+        *   *Example:* Place cursor on empty line, run `llm write a python function that sums two numbers`.
 
 *   **How to use:**
-    1.  (Optional) Select text if you want to provide it as specific context.
-    2.  Position your cursor where you want the new text inserted.
-    3.  Press `Ctrl+E`.
-    4.  Type `llm_generate` followed by your request (e.g., `llm_generate write a python function that sums two numbers`).
-    5.  (Optional) Add [options](#options-for-llm_modify-and-llm_generate) like `-t <template_name>` or `-s "<custom system prompt>"` before your request.
+    1.  (Optional) Select text if you want to modify it or provide it as specific context for generation.
+    2.  Position your cursor appropriately (start of selection for modify, insertion point for generate).
+    3.  Press `Ctrl+E` to open the command prompt.
+    4.  Type `llm` followed by your specific request (e.g., `llm fix grammar`, `llm write a docstring for the function below`).
+    5.  (Optional) Add [options](#options-for-llm) like `-t <template_name>` or `-s "<custom system prompt>"` **before** your request.
     6.  Press Enter.
-*   **Behavior:**
-    *   Your request, any selected text, and surrounding context are sent to the LLM.
-    *   If text was selected, generated text is inserted *after* the selection.
-    *   If no text was selected, generated text is inserted at the cursor.
 
-#### Options for `llm_modify` and `llm_generate`:
+*(Note: Previous videos showed separate `llm_modify` and `llm_generate` commands. These are now unified into `llm`.)*
+<https://github.com/user-attachments/assets/3b670332-30a1-4c35-8408-34c9f9d4fbe9> <!-- This video likely shows the old behavior -->
 
-Both commands accept the following optional flags, which should precede your main textual request:
+#### Options for `llm`:
+
+The `llm` command accepts the following optional flags, which should precede your main textual request:
 
 *   `-t <template_name>` or `--template <template_name>`: Use a specific LLM CLI template. The `llm` CLI tool must be aware of this template (see [LLM Templates documentation](https://llm.datasette.io/en/stable/templates.html)).
 *   `-s "<custom_system_prompt>"` or `--system "<custom_system_prompt>"`: Provide a custom system prompt directly, enclosed in quotes. This overrides any default or template-based system prompt.
 
-**System Prompt Precedence:**
+#### System Prompt Precedence:
+
 The system prompt used for the LLM call follows this order:
+
 1.  Custom system prompt provided via `-s` or `--system` flag.
 2.  System prompt from an LLM template specified via `-t` or `--template` flag.
-3.  System prompt from a plugin default template set via `llm_template_default` (see below).
-4.  The plugin's built-in default system prompt for "modify" or "generate".
+3.  System prompt from the plugin's single default template set via `llm_template_default` (see below).
+4.  The plugin's built-in default system prompt corresponding to the detected operation mode ("modify" or "generate").
 
 ### Template Management Commands
 
@@ -94,43 +86,44 @@ Opens an LLM template YAML file for editing directly within Micro.
     *   If it doesn't exist, a new buffer will be opened, and saving it (`Ctrl+S`) will create `<template_name>.yaml` in that directory.
     *   You are responsible for the correct YAML structure of the template (e.g., `system: "..."` or `prompt: "..."`). Refer to the [LLM Templates documentation](https://llm.datasette.io/en/stable/templates.html).
 
-#### 2. `llm_template_default <template_name> <generate|modify>`
+#### 2. `llm_template_default`
 
-Sets a specific LLM template as the default for either `llm_generate` or `llm_modify` commands when no `-t` or `-s` flag is provided.
+Manages the single default LLM template used by the `llm` command when no `-t` or `-s` flag is provided.
 
-*   **How to use (set):**
-    *   `llm_template_default my_custom_writer generate` (sets `my_custom_writer.yaml` as default for `llm_generate`)
-    *   `llm_template_default my_code_refactor modify` (sets `my_code_refactor.yaml` as default for `llm_modify`)
-*   The plugin will verify if the template file exists and is readable before setting it as a default.
+*   **Set Default:** `llm_template_default <template_name>`
+    *   Sets `<template_name>.yaml` as the default template for all `llm` command invocations.
+    *   *Example:* `llm_template_default my_universal_helper`
+    *   The plugin verifies if the template file exists and is readable before setting it.
 
-#### 3. `llm_template_default --clear <generate|modify>`
+*   **Clear Default:** `llm_template_default --clear`
+    *   Clears the default template setting. The plugin will revert to using its built-in system prompts based on the operation mode ("modify" or "generate") if no `-t` or `-s` flag is used.
 
-Clears the default template for the specified command type, reverting to the plugin's built-in system prompts if no `-t` or `-s` is used.
+*   **Show Default:** `llm_template_default --show`
+    *   Displays the currently set default template.
+    *   Output will be shown in the infobar, e.g., `Default LLM template: my_universal_helper` or `Default LLM template: Not set`.
 
-*   **How to use (clear):**
-    *   `llm_template_default --clear generate`
-    *   `llm_template_default --clear modify`
+*(Note: Previous video showed separate defaults for generate/modify. This is now unified.)*
+<https://github.com/user-attachments/assets/662329b7-95ad-48ec-b937-10d4b00c516c> <!-- This video likely shows the old behavior -->
 
-#### 4. `llm_template_default --show`
+## Configuration
 
-Displays the currently set default templates for `generate` and `modify`.
+You can configure the plugin by setting global options in Micro's `settings.json` file (`Ctrl+E` then `set`).
 
-*   **How to use (show):**
-    *   `llm_template_default --show`
-    *   Output will be shown in the infobar, e.g., "Defaults -- Generate: my_custom_writer | Modify: Not set (uses built-in)".
+*   `"llm.default_template": ""` (string):
+    *   Specifies the name (without `.yaml`) of an LLM template to use by default for the `llm` command if no `-t` or `-s` flag is provided.
+    *   Set to `""` (empty string) to have no default template (uses built-in prompts).
+    *   Example: `"llm.default_template": "my_default"`
 
+*   `"llm.context_lines": 100` (number):
+    *   Specifies how many lines of context before and after the cursor/selection should be sent to the LLM.
+    *   Set to `0` to disable sending context.
+    *   Default is `100`.
+    *   Example: `"llm.context_lines": 50`
 
-https://github.com/user-attachments/assets/662329b7-95ad-48ec-b937-10d4b00c516c
+**Example `settings.json`:**
 
-
-
-
-**Important Notes for All Commands:**
-
-*   The plugin sends context (lines before and after the selection/cursor) to the LLM.
-*   The `-x` flag is automatically added to `llm` CLI calls to attempt to extract raw text/code from Markdown fenced blocks if the LLM outputs them.
-*   You will see messages in Micro's infobar indicating the progress and outcome.
-*   Debug logs are available via Micro's logging (`Ctrl+E` then `log`). These logs are very helpful for troubleshooting.
-
----
-Contributions and feedback are welcome!
+```json
+{
+    "llm.context_lines": 50,
+    "llm.default_template": "my_refactor_template"
+}
