@@ -1,14 +1,14 @@
--- llm.lua 
+-- llm.lua
 local config = import("micro/config")
 local shell = import("micro/shell")
 local micro = import("micro")
 local buffer_pkg = import("micro/buffer")
-local go_math = import("math") 
+local go_math = import("math") -- Standard Lua math library
 local util = import("micro/util")
 local os = import("os")
 local path = import("path/filepath")
 local ioutil = import("io/ioutil")
-local json = import("encoding/json") 
+-- local json = import("encoding/json") -- Not strictly needed for YAML direct editing / llm CLI handling
 
 -- Default system prompts guiding the LLM's behavior.
 -- These are used if no custom prompt, template, or default template is specified.
@@ -45,16 +45,15 @@ local function parseLLMCommandArgs(args_table)
     local user_request_parts = {}
     local custom_system_prompt = nil
     local template_name = nil
-
     if args_table then
         local i = 1
         while i <= #args_table do
-            if (args_table[i] == "-s" or args_table[i] == "--system") and args_table[i+1] then
+            if (args_table[i] == "-s" or args_table[i] == "--system") and args_table[i+1] then -- FIXED
                 custom_system_prompt = args_table[i+1]
-                i = i + 2 
-            elseif (args_table[i] == "-t" or args_table[i] == "--template") and args_table[i+1] then
+                i = i + 2
+            elseif (args_table[i] == "-t" or args_table[i] == "--template") and args_table[i+1] then -- FIXED
                 template_name = args_table[i+1]
-                i = i + 2 
+                i = i + 2
             else
                 if args_table[i] ~= nil then
                     table.insert(user_request_parts, tostring(args_table[i]))
@@ -71,51 +70,118 @@ local function parseLLMCommandArgs(args_table)
 end
 
 -- Function: getLLMTemplatesPath
--- Description: Retrieves the filesystem path to LLM CLI's templates.json file.
--- Returns: string path to templates.json, or nil if an error occurs.
+-- Description: Retrieves the filesystem path to LLM CLI's templates directory.
+-- Returns: string path to templates directory, or nil if an error occurs.
 local function getLLMTemplatesPath()
     local cmd_str = "llm templates path"
-    local _, stdout, stderr, err = shell.Run(cmd_str)
-
-    if err ~= nil or (stderr and string.len(stderr) > 0) then
+    -- shell.RunCommand was confirmed working
+    local output, err_obj = shell.RunCommand(cmd_str) 
+    if err_obj ~= nil then
         micro.Log("LLM_ERROR: Could not get LLM templates path. Command: " .. cmd_str ..
-                  " Stderr: " .. (stderr or "N/A") .. " Error: " .. tostring(err))
+                  " Error: " .. tostring(err_obj))
         return nil
     end
-    if stdout then
-        return string.gsub(stdout, "%s*$", "") 
+    if output then
+        local processed_path = string.gsub(output, "[\n\r]+%s*$", "") -- Trim trailing newlines more robustly
+        processed_path = string.gsub(processed_path, "^%s*", "")   -- Trim leading whitespace
+        if #processed_path > 0 then
+             micro.Log("LLM_DEBUG: LLM templates path received: [" .. processed_path .. "]")
+             return processed_path
+        end
     end
+    micro.Log("LLM_WARNING: 'llm templates path' returned no valid output. Raw: [" .. (output or "nil") .. "]")
     return nil
 end
 
 -- Function: getLLMTemplateContent
--- Description: Reads an LLM template's system prompt content from templates.json.
+-- Description: Reads an LLM template's system prompt content from its YAML file IF IT EXISTS.
 -- Parameters:
 --   - name: string, the name of the LLM template.
--- Returns: string containing the system prompt of the template, or nil if not found or error.
+-- Returns: string containing the system prompt if template exists and prompt is found.
+--          Returns "" (empty string) if template file exists but 'system:' key is not found or empty.
+--          Returns nil if template file does not exist or another read error occurs.
 local function getLLMTemplateContent(name)
-    local templates_file_path = getLLMTemplatesPath()
-    if not templates_file_path then
-        return nil
+    local templates_dir_path = getLLMTemplatesPath()
+    if not templates_dir_path then
+        -- Error already logged by getLLMTemplatesPath
+        return nil 
     end
+    local template_file_name = name .. ".yaml" 
+    local specific_template_file_path = path.Join(templates_dir_path, template_file_name)
+    micro.Log("LLM_DEBUG: getLLMTemplateContent: Checking for template file: " .. specific_template_file_path)
 
-    local file_bytes, err_read = ioutil.ReadFile(templates_file_path)
+    local file_bytes, err_read = ioutil.ReadFile(specific_template_file_path)
     if err_read ~= nil then
-        micro.Log("LLM_ERROR: Could not read LLM templates file at " .. templates_file_path .. ": " .. tostring(err_read))
-        return nil
+        micro.Log("LLM_INFO: getLLMTemplateContent: Could not read template file '" .. specific_template_file_path .. "' (may not exist or unreadable). Error: " .. tostring(err_read))
+        return nil 
     end
     local file_content_string = util.String(file_bytes)
+    micro.Log("LLM_DEBUG: getLLMTemplateContent: Successfully read existing template '" .. specific_template_file_path .. "'.")
 
-    local templates_data, err_json = json.Unmarshal(file_content_string)
-    if err_json ~= nil then
-        micro.Log("LLM_ERROR: Could not parse LLM templates JSON: " .. tostring(err_json))
-        return nil
+    local final_system_prompt = nil
+    local block_indicator_full_line_match, block_char_match = string.match(file_content_string, "^(system:%s*([|>]).*)\n")
+    if block_indicator_full_line_match then
+        local _, system_line_end_pos = string.find(file_content_string, block_indicator_full_line_match, 1, true)
+        if system_line_end_pos then
+            local rest_of_file_content = string.sub(file_content_string, system_line_end_pos + 1)
+            local block_lines_array = {}
+            local determined_initial_indent_len = -1
+            for current_line_str in string.gmatch(rest_of_file_content, "([^\n]*)\n?") do
+                local indent_str, text_content_part = string.match(current_line_str, "^(%s*)(.*)$")
+                if determined_initial_indent_len == -1 then
+                    determined_initial_indent_len = #indent_str
+                    table.insert(block_lines_array, text_content_part)
+                else
+                    if #indent_str >= determined_initial_indent_len then
+                        table.insert(block_lines_array, string.sub(current_line_str, determined_initial_indent_len + 1))
+                    elseif #text_content_part > 0 then break 
+                    else break 
+                    end
+                end
+            end
+            local assembled_block_content
+            if block_char_match == ">" then
+                local temp_folded_content = ""
+                local prev_line_was_empty_in_block = true
+                for _, line_text_in_block in ipairs(block_lines_array) do
+                    local current_line_is_empty = (#string.gsub(line_text_in_block, "%s", "") == 0)
+                    local trimmed_line_text = string.gsub(line_text_in_block, "^%s+", "") 
+                    if current_line_is_empty then
+                        if not prev_line_was_empty_in_block then temp_folded_content = temp_folded_content .. "\n" end
+                        prev_line_was_empty_in_block = true
+                    else
+                        if not prev_line_was_empty_in_block then temp_folded_content = temp_folded_content .. " " end
+                        temp_folded_content = temp_folded_content .. trimmed_line_text
+                        prev_line_was_empty_in_block = false
+                    end
+                end
+                assembled_block_content = temp_folded_content
+            else assembled_block_content = table.concat(block_lines_array, "\n") end
+            final_system_prompt = string.gsub(assembled_block_content, "\n?$", "")
+        end
     end
 
-    if templates_data and templates_data[name] and templates_data[name].system then
-        return templates_data[name].system
+    if final_system_prompt == nil then
+        local single_line_match_text = string.match(file_content_string, "^system:%s*(.+)$")
+        if single_line_match_text then
+            local extracted_prompt = single_line_match_text
+            extracted_prompt = string.gsub(extracted_prompt, "^%s*", "")
+            extracted_prompt = string.gsub(extracted_prompt, "%s*$", "")
+            if (string.sub(extracted_prompt, 1, 1) == "'" and string.sub(extracted_prompt, -1, -1) == "'") or
+               (string.sub(extracted_prompt, 1, 1) == "\"" and string.sub(extracted_prompt, -1, -1) == "\"") then -- FIXED
+                extracted_prompt = string.sub(extracted_prompt, 2, -2)
+            end
+            final_system_prompt = extracted_prompt
+        end
     end
-    return nil 
+
+    if final_system_prompt ~= nil then
+        micro.Log("LLM_DEBUG: getLLMTemplateContent: Returning system prompt: [" .. final_system_prompt .. "]")
+        return final_system_prompt
+    else
+        micro.Log("LLM_INFO: getLLMTemplateContent: 'system:' key not found in file: " .. specific_template_file_path .. ". Returning empty string as indicator.")
+        return "" -- Return empty string if file exists but no system prompt found
+    end
 end
 
 -- Function: escapeShellArg
@@ -130,78 +196,77 @@ local function escapeShellArg(s)
     return "\"" .. string.gsub(s, "\"", "\\\"") .. "\""
 end
 
-function handleJobStdout(output, userargs) 
+function handleJobStdout(output, userargs)
     table.insert(job_state.stdout_data, output)
-    micro.Log("LLM_DEBUG: Job STDOUT (" .. (job_state.command_type or "unknown") .. "): " .. output) 
+    -- micro.Log("LLM_DEBUG: Job STDOUT (" .. (job_state.command_type or "unknown") .. "): " .. output) -- Keep this minimal for now
 end
-function handleJobStderr(output, userargs) 
+
+function handleJobStderr(output, userargs)
     table.insert(job_state.stderr_data, output)
-    micro.Log("LLM_DEBUG: Job STDERR (" .. (job_state.command_type or "unknown") .. "): " .. output) 
+    -- micro.Log("LLM_DEBUG: Job STDERR (" .. (job_state.command_type or "unknown") .. "): " .. output) -- Keep this minimal for now
 end
 
 function handleJobExit(exit_status_or_output, userargs)
-    micro.Log("LLM_DEBUG: Job exited (" .. job_state.command_type .. "). Raw data: [" .. tostring(exit_status_or_output) .. "]")
+    micro.Log("LLM_DEBUG: Job exited (" .. (job_state.command_type or "unknown") .. "). Exit code/status: [" .. tostring(exit_status_or_output) .. "]")
     job_state.exit_code = tostring(exit_status_or_output)
-
     if job_state.temp_file_path then
-        pcall(os.Remove, job_state.temp_file_path) 
+        pcall(os.Remove, job_state.temp_file_path)
         job_state.temp_file_path = nil
-        micro.Log("LLM_DEBUG: Temp file removed.")
+        micro.Log("LLM_DEBUG: Temp file removed: " .. (job_state.temp_file_path or "already nil"))
     end
-
     local final_stdout = table.concat(job_state.stdout_data, "")
     local final_stderr = table.concat(job_state.stderr_data, "")
-    micro.Log("LLM_DEBUG: Final STDOUT (" .. job_state.command_type .. ", len " .. string.len(final_stdout) .. "): [" .. final_stdout .. "]")
-    micro.Log("LLM_DEBUG: Final STDERR (" .. job_state.command_type .. ", len " .. string.len(final_stderr) .. "): [" .. final_stderr .. "]")
+    micro.Log("LLM_DEBUG: Final STDOUT (len " .. string.len(final_stdout) .. "): [" .. final_stdout .. "]")
+    micro.Log("LLM_DEBUG: Final STDERR (len " .. string.len(final_stderr) .. "): [" .. final_stderr .. "]")
 
-    if job_state.bp == nil or job_state.insertion_loc_ptr == nil then 
-        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": Critical state missing.")
-        return 
+    if job_state.bp == nil or job_state.insertion_loc_ptr == nil then -- FIXED
+        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": Critical state missing after job.")
+        return
     end
-    if job_state.command_type == "modify" and 
-       (job_state.selection_to_remove_start_loc_ptr == nil or job_state.selection_to_remove_end_loc_ptr == nil) then 
-        micro.InfoBar():Message("ERROR: LLM Modify: Selection locs missing.")
-        return 
+    if job_state.command_type == "modify" and
+       (job_state.selection_to_remove_start_loc_ptr == nil or job_state.selection_to_remove_end_loc_ptr == nil) then -- FIXED
+        micro.InfoBar():Message("ERROR: LLM Modify: Selection locs missing after job.")
+        return
     end
-    
+
     local current_buffer = job_state.bp.Buf
     local active_cursor = job_state.bp.Cursor
-    if not current_buffer or not active_cursor then 
-        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": Buffer/cursor nil.")
-        return 
-    end
-    
-    if string.match(final_stderr, "cat:.*Permission denied") then 
-        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": Temp file perm err.")
-        micro.Log("LLM_ERROR: Cmd("..job_state.original_command..") perm fail: " .. final_stderr)
+    if not current_buffer or not active_cursor then
+        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": Buffer/cursor nil after job.")
         return
-    elseif final_stderr and (string.find(final_stderr, "command not found") or string.find(final_stderr, "Error:") or string.find(final_stderr, "ozone-platform-hint")) then 
-        micro.InfoBar():Message("ERROR: LLM "..job_state.command_type..": Critical shell/LLM/Electron error.")
-        micro.Log("LLM_ERROR: Cmd("..job_state.original_command..") crit fail: "..final_stderr)
-        return 
+    end
+
+    if string.match(final_stderr, "cat:.*Permission denied") then
+        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": Temp file permission error.")
+        micro.Log("LLM_ERROR: Cmd("..job_state.original_command..") temp file perm fail: " .. final_stderr)
+        return
+    elseif final_stderr and (string.find(final_stderr, "command not found", 1, true) or string.find(final_stderr, "Error:", 1, true) or string.find(final_stderr, "Traceback", 1, true)) and not string.find(final_stderr, "ozone-platform-hint", 1, true) then
+        micro.InfoBar():Message("ERROR: LLM "..job_state.command_type..": Critical failure (shell/LLM).")
+        micro.Log("LLM_ERROR: Cmd("..job_state.original_command..") critical fail. Stderr: "..final_stderr)
+        return
     end
 
     if final_stdout and string.gsub(final_stdout, "%s", "") ~= "" then
-        if #final_stderr > 0 and not string.find(final_stderr, "ozone-platform-hint") then 
-            micro.Log("LLM_DEBUG: Note: STDERR for (" .. job_state.original_command .. "): " .. final_stderr) 
+        if #final_stderr > 0 and not string.find(final_stderr, "ozone-platform-hint", 1, true) then
+            micro.Log("LLM_DEBUG: Note: Non-critical STDERR for (" .. job_state.original_command .. "): " .. final_stderr)
         end
-        local output = string.gsub(string.gsub(final_stdout, "^%s*", ""), "%s*$", "") 
+        local output = string.gsub(string.gsub(final_stdout, "^%s*", ""), "%s*$", "")
         micro.Log("LLM_DEBUG: Final text for insertion: [" .. output .. "]")
         
-        if type(job_state.insertion_loc_ptr.X)~="number" or type(job_state.insertion_loc_ptr.Y)~="number" then 
-            micro.InfoBar():Message("ERROR: LLM Insert loc invalid")
-            return 
+        if type(job_state.insertion_loc_ptr.X)~="number" or type(job_state.insertion_loc_ptr.Y)~="number" then
+            micro.InfoBar():Message("ERROR: LLM Insert loc invalid after job.")
+            return
         end
         local ins_loc = buffer_pkg.Loc(job_state.insertion_loc_ptr.X, job_state.insertion_loc_ptr.Y)
-        
+
         if job_state.command_type == "modify" then
-            if type(job_state.selection_to_remove_start_loc_ptr.X)~="number" or type(job_state.selection_to_remove_start_loc_ptr.Y)~="number" or 
-               type(job_state.selection_to_remove_end_loc_ptr.X)~="number" or type(job_state.selection_to_remove_end_loc_ptr.Y)~="number" then 
-                micro.InfoBar():Message("ERROR: LLM Modify remove locs invalid")
-                return 
+            if type(job_state.selection_to_remove_start_loc_ptr.X)~="number" or type(job_state.selection_to_remove_start_loc_ptr.Y)~="number" or
+               type(job_state.selection_to_remove_end_loc_ptr.X)~="number" or type(job_state.selection_to_remove_end_loc_ptr.Y)~="number" then
+                micro.InfoBar():Message("ERROR: LLM Modify remove locs invalid after job.")
+                return
             end
             current_buffer:Remove(
-                buffer_pkg.Loc(job_state.selection_to_remove_start_loc_ptr.X, job_state.selection_to_remove_start_loc_ptr.Y), 
+                buffer_pkg.Loc(job_state.selection_to_remove_start_loc_ptr.X, job_state.selection_to_remove_start_loc_ptr.Y),
                 buffer_pkg.Loc(job_state.selection_to_remove_end_loc_ptr.X, job_state.selection_to_remove_end_loc_ptr.Y)
             )
         end
@@ -209,10 +274,10 @@ function handleJobExit(exit_status_or_output, userargs)
         active_cursor:Relocate()
         micro.InfoBar():Message("LLM " .. job_state.command_type .. ": Text updated.")
     else
-        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": No valid output.")
-        micro.Log("LLM_ERROR: Cmd("..job_state.original_command..") no valid stdout. STDERR: "..final_stderr..". Exit: "..job_state.exit_code)
+        micro.InfoBar():Message("ERROR: LLM " .. job_state.command_type .. ": No valid output received.")
+        micro.Log("LLM_ERROR: Cmd("..job_state.original_command..") produced no valid stdout. STDERR: ["..final_stderr.."]. Exit: ["..tostring(job_state.exit_code).."]")
     end
-    micro.Log("LLM_DEBUG: --- LLM Job finished (" .. job_state.command_type .. ") ---")
+    micro.Log("LLM_DEBUG: --- LLM Job finished (" .. (job_state.command_type or "unknown") .. ") ---")
 end
 
 function startLLMJob(bp, args, command_type_str)
@@ -227,7 +292,7 @@ function startLLMJob(bp, args, command_type_str)
     job_state.selection_to_remove_start_loc_ptr = nil
     job_state.selection_to_remove_end_loc_ptr = nil
 
-    local parsed_args_data = parseLLMCommandArgs(args)
+    local parsed_args_data = parseLLMCommandArgs(args) -- Already fixed internally
     local user_llm_request = parsed_args_data.user_request
     local custom_system_prompt_arg = parsed_args_data.custom_system_prompt
     local template_name_arg = parsed_args_data.template_name
@@ -245,8 +310,8 @@ function startLLMJob(bp, args, command_type_str)
     local active_cursor = bp.Cursor
     if not current_buffer then micro.InfoBar():Message("ERROR: LLM " .. command_type_str .. ": Buffer is nil!"); return end
     if not active_cursor then micro.InfoBar():Message("ERROR: LLM " .. command_type_str .. ": Cursor is nil!"); return end
-    
-    local selected_text_content = "" 
+
+    local selected_text_content = ""
     if active_cursor:HasSelection() then
         if not active_cursor.CurSelection or not active_cursor.CurSelection[1] or not active_cursor.CurSelection[2] then
             micro.InfoBar():Message("ERROR: LLM "..command_type_str..": Invalid selection data.")
@@ -254,21 +319,17 @@ function startLLMJob(bp, args, command_type_str)
         end
         local sel_start_ptr = active_cursor.CurSelection[1]
         local sel_end_ptr = active_cursor.CurSelection[2]
-        
         if command_type_str == "modify" then
             job_state.insertion_loc_ptr = buffer_pkg.Loc(sel_start_ptr.X, sel_start_ptr.Y)
             job_state.selection_to_remove_start_loc_ptr = buffer_pkg.Loc(sel_start_ptr.X, sel_start_ptr.Y)
             job_state.selection_to_remove_end_loc_ptr = buffer_pkg.Loc(sel_end_ptr.X, sel_end_ptr.Y)
         elseif command_type_str == "generate" then
-            job_state.insertion_loc_ptr = buffer_pkg.Loc(sel_end_ptr.X, sel_end_ptr.Y) 
+            job_state.insertion_loc_ptr = buffer_pkg.Loc(sel_end_ptr.X, sel_end_ptr.Y)
         end
-        
         local sel_bytes = active_cursor:GetSelection()
-        if sel_bytes then
-            selected_text_content = util.String(sel_bytes)
-        end
+        if sel_bytes then selected_text_content = util.String(sel_bytes) end
         micro.Log("LLM_DEBUG: Selected text (len " .. string.len(selected_text_content) .. ") captured.")
-    else 
+    else
         if command_type_str == "modify" then
             micro.InfoBar():Message("ERROR: LLM Modify: This command requires text to be selected.")
             return
@@ -276,39 +337,38 @@ function startLLMJob(bp, args, command_type_str)
         job_state.insertion_loc_ptr = buffer_pkg.Loc(active_cursor.X, active_cursor.Y)
         micro.Log("LLM_DEBUG: No selection. Insertion at cursor for " .. command_type_str .. ".")
     end
-    
+
     local ref_loc_for_context = job_state.insertion_loc_ptr
     local current_context_ref_line = ref_loc_for_context.Y
     local lines_of_context = 30
     local context_before_text = ""
     local context_after_text = ""
-    
+
     if current_context_ref_line > 0 then
-        local context_start_line = math.max(0, current_context_ref_line - lines_of_context)
+        local context_start_line = go_math.Max(0, current_context_ref_line - lines_of_context) 
         local actual_context_end_line = current_context_ref_line - 1
         if actual_context_end_line >= context_start_line then
             local context_start_loc = buffer_pkg.Loc(0, context_start_line)
             local end_line_str_ctx = current_buffer:Line(actual_context_end_line)
             local context_end_loc = buffer_pkg.Loc(string.len(end_line_str_ctx), actual_context_end_line)
-            local ctx_bytes = current_buffer:Substr(context_start_loc, context_end_loc)
-            if ctx_bytes then context_before_text = util.String(ctx_bytes) end
+            local ctx_bytes_before = current_buffer:Substr(context_start_loc, context_end_loc)
+            if ctx_bytes_before then context_before_text = util.String(ctx_bytes_before) end
         end
     end
-    
     local total_lines_in_buffer = current_buffer:LinesNum()
-    local reference_end_line_for_context_after = ref_loc_for_context.Y 
+    local reference_end_line_for_context_after = ref_loc_for_context.Y
     if command_type_str == "modify" and job_state.selection_to_remove_end_loc_ptr then
         reference_end_line_for_context_after = job_state.selection_to_remove_end_loc_ptr.Y
     end
     if reference_end_line_for_context_after < total_lines_in_buffer - 1 then
-        local context_start_line = reference_end_line_for_context_after + 1
-        local context_end_line = math.min(total_lines_in_buffer - 1, reference_end_line_for_context_after + lines_of_context)
-        if context_start_line <= context_end_line then
-            local context_start_loc = buffer_pkg.Loc(0, context_start_line)
-            local end_line_str_ctx = current_buffer:Line(context_end_line)
-            local context_end_loc = buffer_pkg.Loc(string.len(end_line_str_ctx), context_end_line)
-            local ctx_bytes = current_buffer:Substr(context_start_loc, context_end_loc)
-            if ctx_bytes then context_after_text = util.String(ctx_bytes) end
+        local context_start_line_after = reference_end_line_for_context_after + 1
+        local context_end_line_after = go_math.Min(total_lines_in_buffer - 1, reference_end_line_for_context_after + lines_of_context)
+        if context_start_line_after <= context_end_line_after then
+            local context_start_loc_after = buffer_pkg.Loc(0, context_start_line_after)
+            local end_line_str_ctx_after = current_buffer:Line(context_end_line_after)
+            local context_end_loc_after = buffer_pkg.Loc(string.len(end_line_str_ctx_after), context_end_line_after)
+            local ctx_bytes_after = current_buffer:Substr(context_start_loc_after, context_end_loc_after)
+            if ctx_bytes_after then context_after_text = util.String(ctx_bytes_after) end
         end
     end
     micro.Log("LLM_DEBUG: Context gathering complete for " .. command_type_str .. ".")
@@ -337,28 +397,31 @@ function startLLMJob(bp, args, command_type_str)
         if job_state.temp_file_path then pcall(os.Remove,job_state.temp_file_path); job_state.temp_file_path=nil;end
         return
     end
-    micro.Log("LLM_DEBUG: Temp file written: " .. job_state.temp_file_path .. " (permissions 0600 / 384)")
+    micro.Log("LLM_DEBUG: Temp file written: " .. job_state.temp_file_path .. " (permissions 0600)")
 
     local llm_parts = {"cat", job_state.temp_file_path, "|", "llm"}
-    local chosen_system_prompt_text 
+    local chosen_system_prompt_text_for_s_flag = nil
+    local using_llm_template_t_flag = false
     local sys_prompt_source_log_msg = "unknown"
 
     if custom_system_prompt_arg then
-        chosen_system_prompt_text = custom_system_prompt_arg
-        sys_prompt_source_log_msg = "custom from -s flag"
+        chosen_system_prompt_text_for_s_flag = custom_system_prompt_arg
+        sys_prompt_source_log_msg = "custom from -s flag: [" .. custom_system_prompt_arg .. "]"
     elseif template_name_arg then
         table.insert(llm_parts, "-t"); table.insert(llm_parts, escapeShellArg(template_name_arg))
-        sys_prompt_source_log_msg = "template from -t flag (" .. template_name_arg .. ")"
+        sys_prompt_source_log_msg = "template from micro -t flag (" .. template_name_arg .. ")"
+        using_llm_template_t_flag = true
     else
         local default_template_key = "llm_default_"..command_type_str.."_template"
         local default_template_name = config.GetGlobalOption(default_template_key)
         if default_template_name and #default_template_name > 0 then
             table.insert(llm_parts, "-t"); table.insert(llm_parts, escapeShellArg(default_template_name))
-            sys_prompt_source_log_msg = "default plugin template (" .. default_template_name .. ")"
-        else 
-            chosen_system_prompt_text = system_prompts[command_type_str]
-            sys_prompt_source_log_msg = "hardcoded plugin default (" .. command_type_str .. ")" 
-            if not chosen_system_prompt_text then
+            sys_prompt_source_log_msg = "plugin default template (" .. default_template_name .. ") for '" .. command_type_str .. "'"
+            using_llm_template_t_flag = true
+        else
+            chosen_system_prompt_text_for_s_flag = system_prompts[command_type_str]
+            sys_prompt_source_log_msg = "hardcoded plugin default system prompt for '" .. command_type_str .. "'"
+            if not chosen_system_prompt_text_for_s_flag then
                 micro.InfoBar():Message("ERROR: No system prompt defined for command type: "..command_type_str)
                 if job_state.temp_file_path then pcall(os.Remove,job_state.temp_file_path);job_state.temp_file_path=nil;end
                 return
@@ -366,25 +429,26 @@ function startLLMJob(bp, args, command_type_str)
         end
     end
 
-    if chosen_system_prompt_text then
-        table.insert(llm_parts, "-s"); table.insert(llm_parts, escapeShellArg(chosen_system_prompt_text))
+    if chosen_system_prompt_text_for_s_flag and not using_llm_template_t_flag then
+        table.insert(llm_parts, "-s"); table.insert(llm_parts, escapeShellArg(chosen_system_prompt_text_for_s_flag))
     end
-    
-    micro.Log("LLM_DEBUG: System prompt source: "..sys_prompt_source_log_msg)
-    table.insert(llm_parts,"-x") 
-    micro.Log("LLM_DEBUG: Added -x flag to llm command.")
-    table.insert(llm_parts,"-") 
-    
+    micro.Log("LLM_DEBUG: System prompt/template decision: "..sys_prompt_source_log_msg)
+
+    table.insert(llm_parts,"-x")
+    table.insert(llm_parts,"-")
     local cmd = table.concat(llm_parts, " ")
     job_state.original_command = cmd
-    micro.InfoBar():Message("LLM "..command_type_str..": Processing...") 
+    micro.InfoBar():Message("LLM "..command_type_str..": Processing...")
     micro.Log("LLM_DEBUG: Executing command: "..cmd)
+    
+    micro.Log("LLM_DIAGNOSTIC_JOBSTART: Type of 'shell': " .. type(shell) .. ", Type of 'shell.JobStart': " .. type(shell and shell.JobStart))
+
     local job, err = shell.JobStart(cmd, handleJobStdout, handleJobStderr, handleJobExit, {})
     if err ~= nil then
         micro.InfoBar():Message("ERROR: LLM "..command_type_str..": Failed to start job: "..tostring(err))
         if job_state.temp_file_path then pcall(os.Remove,job_state.temp_file_path);job_state.temp_file_path=nil;end
     elseif not job then
-        micro.InfoBar():Message("ERROR: LLM "..command_type_str..": JobStart returned nil object without error.")
+        micro.InfoBar():Message("ERROR: LLM "..command_type_str..": JobStart returned nil job object without error.")
         if job_state.temp_file_path then pcall(os.Remove,job_state.temp_file_path);job_state.temp_file_path=nil;end
     end
     micro.Log("LLM_DEBUG: LLM Job ("..command_type_str..") initiated.")
@@ -393,112 +457,93 @@ end
 function llmModifyCommand(bp, args)
     startLLMJob(bp, args, "modify")
 end
+
 function llmGenerateCommand(bp, args)
     startLLMJob(bp, args, "generate")
 end
 
-local function handleLLMTemplateBufferSave(bp)
-    local buf = bp.Buf; local name = buf:GetOption("llm_template_target_name")
-    if not name or #name == 0 then 
-        micro.Log("LLM_ERROR: No target_name on template buffer save")
-        micro.InfoBar():Message("ERROR: No template name associated with this buffer.")
-        return true 
-    end
-    local content = buf:String()
-    if string.gsub(content,"%s","") == "" then 
-        micro.InfoBar():Message("Template content is empty. Not saving.")
-        return true 
-    end
-    local cmd_parts = {"llm","-s",escapeShellArg(content),"--save",escapeShellArg(name)}
-    local cmd_str = table.concat(cmd_parts," ")
-    micro.Log("LLM_DEBUG: Saving template with command: "..cmd_str)
-    local _, stdout, stderr, err = shell.Run(cmd_str)
-    if err~=nil or (stderr and #stderr>0 and not string.find(stderr,"template already exists")) then 
-        local msg="Failed to save LLM template '"..name.."'. "
-        if stderr and #stderr>0 then msg=msg.."Details: "..stderr else msg=msg.."Details: "..tostring(err) end
-        micro.InfoBar():Message(msg)
-        micro.Log("LLM_ERROR: "..msg.." Command: "..cmd_str)
-    else 
-        micro.InfoBar():Message("LLM Template '"..name.."' saved/updated.")
-        micro.Log("LLM_DEBUG: Template '"..name.."' saved. LLM Stdout: "..(stdout or "N/A")) 
-    end
-    buf:SetDirty(false)
-    return true
-end
+-- Removed handleLLMTemplateBufferSave as it's not used with the direct file editing approach
 
+-- Function: llmTemplateCommand
+-- Description: Opens the specified LLM template YAML file in a new tab for editing.
+--              If the template file doesn't exist, Micro opens a new buffer
+--              that will be saved to that path.
 function llmTemplateCommand(bp, args)
-    if #args~=1 or #args[1]==0 then 
+    if not (bp and bp.NewTabCmd and type(bp.NewTabCmd) == "function") then
+        micro.Log("LLM_CRITICAL: llmTemplateCommand: Initial 'bp' (type: " .. type(bp) .. ") is not valid or NewTabCmd is missing.")
+        micro.InfoBar():Message("ERROR: Plugin command context invalid.")
+        return
+    end
+    if #args ~= 1 or #args[1] == 0 then
         micro.InfoBar():Message("Usage: llm_template <template_name>")
-        return 
+        return
     end
-    local name=args[1]
-    local content=getLLMTemplateContent(name)
-    local buf_content=""
-    local msg="Editing new LLM template '"..name.."'. Type system prompt and save (Ctrl+S)."
-    if content then 
-        buf_content=content
-        msg="Editing existing LLM template '"..name.."'. Save (Ctrl+S) to update." 
-    else 
-        buf_content="-- System prompt for new LLM template: "..name.."\n" 
+    local template_name_to_edit = args[1]
+    local templates_dir = getLLMTemplatesPath()
+    if not templates_dir then
+        micro.InfoBar():Message("ERROR: Could not determine LLM templates directory.")
+        return
     end
-    local fname="llm_edit_"..name..".llm-template.txt"
-    local dir=path.Join(config.ConfigDir,"llm_plugin_temp_buffers")
-    pcall(function() 
-        local _,e=os.MkdirAll(dir,0755)
-        if e~=nil then micro.Log("LLM_WARNING: Could not create temp buffer directory: "..dir.." Error: "..tostring(e)) end 
-    end)
-    local buf_path=path.Join(dir,fname)
-    local new_buf=buffer_pkg.NewBufferFromString(buf_content,buf_path)
-    new_buf:SetOption("llm_template_target_name",name)
-    new_buf:SetOption("onSave",handleLLMTemplateBufferSave)
-    new_buf.Settings["syntax"]=true
-    new_buf.Settings["filetype"]="markdown"
-    local tab_group=micro.CurPane().Parent
-    if not tab_group then 
-        bp:OpenBuffer(new_buf) 
-    else 
-        local tab=tab_group:NewTab(true)
-        tab:SetBuffer(new_buf) 
-    end
-    micro.InfoBar():Message(msg)
+    local template_file_actual_path = path.Join(templates_dir, template_name_to_edit .. ".yaml")
+    micro.Log("LLM_DEBUG: llmTemplateCommand: Opening template file in new tab: " .. template_file_actual_path)
+    bp:NewTabCmd({template_file_actual_path})
+    micro.InfoBar():Message("Opening template '" .. template_name_to_edit .. ".yaml'...")
 end
 
 function llmTemplateDefaultCommand(bp, args)
-    if #args==0 then args={"--show"} end
-    if args[1]=="--show" then 
-        local g=config.GetGlobalOption("llm_default_generate_template") or "Not set (uses built-in)"
-        local m=config.GetGlobalOption("llm_default_modify_template") or "Not set (uses built-in)"
-        micro.InfoBar():Message("Defaults -- Generate: "..g.." | Modify: "..m)
+    if #args == 0 then args = {"--show"} end
+
+    if args[1] == "--show" then -- FIXED with ==
+        local g_key = "llm_default_generate_template"
+        local m_key = "llm_default_modify_template"
+        local g = config.GetGlobalOption(g_key)
+        local m = config.GetGlobalOption(m_key)
+        local g_display = (g and #g > 0) and g or "Not set (uses built-in)"
+        local m_display = (m and #m > 0) and m or "Not set (uses built-in)"
+        micro.InfoBar():Message("Defaults -- Generate: " .. g_display .. " | Modify: " .. m_display)
+        return
+    end
+
+    if args[1] == "--clear" then -- FIXED with ==
+        if #args ~= 2 or not (args[2] == "generate" or args[2] == "modify") then -- FIXED with ==
+            micro.InfoBar():Message("Usage: llm_template_default --clear <generate|modify>")
+            return
+        end
+        local key_to_clear = "llm_default_" .. args[2] .. "_template"
+        config.SetGlobalOption(key_to_clear, "") -- FIXED: Pass empty string to clear
+        micro.InfoBar():Message("Default LLM template for '" .. args[2] .. "' cleared.")
+        micro.Log("LLM_DEBUG: Cleared global option (set to empty string): " .. key_to_clear)
         return 
     end
-    if args[1]=="--clear" then 
-        if #args~=2 or not (args[2]=="generate" or args[2]=="modify") then 
-            micro.InfoBar():Message("Usage: llm_template_default --clear <generate|modify>")
-            return 
-        end
-        config.SetGlobalOption("llm_default_"..args[2].."_template",nil)
-        micro.InfoBar():Message("Default LLM template for '"..args[2].."' cleared.")
-    else 
-        if #args~=2 or not (args[2]=="generate" or args[2]=="modify") then 
-            micro.InfoBar():Message("Usage: llm_template_default <template_name> <generate|modify>")
-            return 
-        end
-        if not getLLMTemplateContent(args[1]) then 
-            micro.InfoBar():Message("ERROR: LLM Template '"..args[1].."' not found. Cannot set as default.")
-            micro.Log("LLM_ERROR: Attempted to set non-existent template '"..args[1].."' as default for "..args[2])
-            return 
-        end
-        config.SetGlobalOption("llm_default_"..args[2].."_template",args[1])
-        micro.InfoBar():Message("Default LLM template for '"..args[2].."' set to: "..args[1])
+
+    if #args ~= 2 or not (args[2] == "generate" or args[2] == "modify") then -- FIXED with ==
+        micro.InfoBar():Message("Usage: llm_template_default <template_name> <generate|modify>")
+        return
     end
+
+    local template_name_to_set = args[1]
+    local command_type_to_set_for = args[2]
+    
+    -- getLLMTemplateContent returns nil if file doesn't exist/unreadable,
+    -- or an empty string if file exists but no system prompt is found/parsed.
+    -- For setting a default, we need to ensure the template is valid conceptually.
+    -- If getLLMTemplateContent returns nil, the template file itself is problematic.
+    if getLLMTemplateContent(template_name_to_set) == nil then 
+        micro.InfoBar():Message("ERROR: LLM Template '" .. template_name_to_set .. "' not found or unreadable. Cannot set as default.")
+        micro.Log("LLM_ERROR: Attempted to set non-existent/unreadable template '" .. template_name_to_set .. "' as default for " .. command_type_to_set_for)
+        return
+    end
+    
+    local key_to_set = "llm_default_" .. command_type_to_set_for .. "_template"
+    config.SetGlobalOption(key_to_set, template_name_to_set)
+    micro.InfoBar():Message("Default LLM template for '" .. command_type_to_set_for .. "' set to: " .. template_name_to_set)
+    micro.Log("LLM_DEBUG: Set global option " .. key_to_set .. " = " .. template_name_to_set)
 end
 
 function init()
-    micro.Log("LLM_DEBUG: LLM Plugin initializing (User's Base Logic, Cleaned Comments & Features, Minimal Infobar)...")
-    
+    micro.Log("LLM_DEBUG: LLM Plugin initializing...") -- Simplified init message
     config.MakeCommand("llm_modify", llmModifyCommand, config.NoComplete)
     config.MakeCommand("llm_generate", llmGenerateCommand, config.NoComplete)
     config.MakeCommand("llm_template", llmTemplateCommand, config.NoComplete)
     config.MakeCommand("llm_template_default", llmTemplateDefaultCommand, config.NoComplete)
-    -- Removed infobar message on load as requested
 end
