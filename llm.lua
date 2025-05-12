@@ -324,7 +324,7 @@ function startLLMJob(bp, args, command_type_str)
     end
     local ref_loc_for_context = job_state.insertion_loc_ptr
     local current_context_ref_line = ref_loc_for_context.Y
-    local lines_of_context = 30
+    local lines_of_context = 100
     local context_before_text = ""
     local context_after_text = ""
     if current_context_ref_line > 0 then

@@ -1,14 +1,14 @@
 {
   "Name": "llm",
-  "Description": "Integrates the 'llm' CLI for text modification and generation within Micro.",
-  "Website": "https://github.com/yourusername/llm-micro", // Example
+  "Description": "Integrates SimonW's 'llm' CLI for text modification and generation within Micro.",
+  "Website": "https://github.com/shamanicvocalarts/llm-micro",
   "Tags": ["llm", "ai", "text generation", "editing"],
   "Versions": [
     {
       "Version": "0.1.0",
-      "Url": "https://github.com/yourusername/llm-micro/archive/v0.1.0.zip", // Example
+      "Url": "https://github.com/shamanicvocalarts/llm-micro",
       "Require": {
-        "micro": ">=2.0.0" // As per docs, good to specify
+        "micro": ">=2.0.0" 
       }
     }
   ]
