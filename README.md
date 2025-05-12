@@ -119,6 +119,12 @@ Displays the currently set default templates for `generate` and `modify`.
     *   `llm_template_default --show`
     *   Output will be shown in the infobar, e.g., "Defaults -- Generate: my_custom_writer | Modify: Not set (uses built-in)".
 
+
+https://github.com/user-attachments/assets/662329b7-95ad-48ec-b937-10d4b00c516c
+
+
+
+
 **Important Notes for All Commands:**
 
 *   The plugin sends context (lines before and after the selection/cursor) to the LLM.
