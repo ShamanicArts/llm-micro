@@ -131,3 +131,15 @@ You can configure the plugin by setting global options in Micro's `settings.json
     "llm.context_lines": 50,
     "llm.default_template": "my_refactor_template"
 }
+```
+
+## Important Notes
+
+*   The `-x` flag is automatically added to `llm` CLI calls by the plugin to attempt to extract raw text/code from Markdown fenced blocks if the LLM outputs them.
+*   You will see messages in Micro's infobar indicating the progress (e.g., `LLM (modify): Processing...`) and outcome.
+*   Debug logs are available via Micro's logging (`Ctrl+E` then `log`). Look for messages prefixed with `LLM_DEBUG:`, `LLM_INFO:`, or `LLM_ERROR:`. These are very helpful for troubleshooting.
+
+---
+Contributions and feedback are welcome!
+
+
