@@ -1,4 +1,4 @@
-{
+[{
   "Name": "llm",
   "Description": "Integrates SimonW's 'llm' CLI for text modification and generation within Micro.",
   "Website": "https://github.com/shamanicvocalarts/llm-micro",
@@ -12,4 +12,4 @@
       }
     }
   ]
-}
+}]
