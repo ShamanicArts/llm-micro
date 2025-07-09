@@ -365,15 +365,23 @@ function startLLMJob(bp, args, command_type_str)
     micro.Log("LLM_DEBUG: Full prompt for LLM (" .. command_type_str .. "):\n" .. full_prompt_to_llm)
 
     job_state.temp_file_path = path.Join(config.ConfigDir, "llm_job_prompt.txt")
-    local err_write = ioutil.WriteFile(job_state.temp_file_path, full_prompt_to_llm, 384)
+    -- Write the file with a UTF-8 Byte Order Mark (BOM) for Windows compatibility
+    local bom = "\239\187\191" -- UTF-8 BOM bytes
+    local err_write = ioutil.WriteFile(job_state.temp_file_path, bom .. full_prompt_to_llm, 384)
     if err_write ~= nil then
         micro.InfoBar():Message("ERROR: LLM: Failed write temp prompt: "..tostring(err_write))
         if job_state.temp_file_path then local p=job_state.temp_file_path; job_state.temp_file_path=nil; pcall(os.Remove,p); end
         return
     end
-    micro.Log("LLM_DEBUG: Temp file written: " .. job_state.temp_file_path)
+    micro.Log("LLM_DEBUG: Temp file written with UTF-8 BOM: " .. job_state.temp_file_path)
 
-    local llm_parts = {"cat", job_state.temp_file_path, "|", "llm"}
+    local llm_executable = "llm"
+    local is_windows = (string.byte(path.Join("a", "b"), 2) == 92)
+    if is_windows then
+        llm_executable = "llm.exe"
+    end
+
+    local llm_command_parts = {llm_executable}
     local chosen_system_prompt_text_for_s_flag = nil ; local using_llm_template_t_flag = false
     local sys_prompt_source_log_msg = "unknown"
 
@@ -381,14 +389,14 @@ function startLLMJob(bp, args, command_type_str)
         chosen_system_prompt_text_for_s_flag = custom_system_prompt_arg
         sys_prompt_source_log_msg = "custom from -s flag"
     elseif template_name_arg then
-        table.insert(llm_parts, "-t"); table.insert(llm_parts, escapeShellArg(template_name_arg))
+        table.insert(llm_command_parts, "-t"); table.insert(llm_command_parts, escapeShellArg(template_name_arg))
         sys_prompt_source_log_msg = "template from -t flag (" .. template_name_arg .. ")"
         using_llm_template_t_flag = true
     else
         local default_template_key = PLUGIN_OPT_PREFIX .. "default_template"
         local default_template_name = config.GetGlobalOption(default_template_key)
         if default_template_name and #default_template_name > 0 then
-            table.insert(llm_parts, "-t"); table.insert(llm_parts, escapeShellArg(default_template_name))
+            table.insert(llm_command_parts, "-t"); table.insert(llm_command_parts, escapeShellArg(default_template_name))
             sys_prompt_source_log_msg = "plugin default template (" .. default_template_name .. ")"
             using_llm_template_t_flag = true
         else
@@ -401,22 +409,56 @@ function startLLMJob(bp, args, command_type_str)
         end
     end
     if chosen_system_prompt_text_for_s_flag and not using_llm_template_t_flag then
-        table.insert(llm_parts, "-s"); table.insert(llm_parts, escapeShellArg(chosen_system_prompt_text_for_s_flag))
+        table.insert(llm_command_parts, "-s"); table.insert(llm_command_parts, escapeShellArg(chosen_system_prompt_text_for_s_flag))
     end
     micro.Log("LLM_DEBUG: System prompt/template decision: " .. sys_prompt_source_log_msg)
 
-    table.insert(llm_parts, "-x") ; table.insert(llm_parts, "-")
-    local cmd = table.concat(llm_parts, " ")
-    job_state.original_command = cmd
-    micro.InfoBar():Message("LLM (" .. command_type_str .. "): Processing...")
-    micro.Log("LLM_DEBUG: Executing: " .. cmd)
+    table.insert(llm_command_parts, "-x") ; table.insert(llm_command_parts, "-")
+    local llm_command_str = table.concat(llm_command_parts, " ")
 
-    local job, err = shell.JobStart(cmd, handleJobStdout, handleJobStderr, handleJobExit, {})
+    local cmd_to_spawn
+    local cmd_args
+
+    if is_windows then
+        cmd_to_spawn = "powershell.exe"
+        
+        -- Enhanced UTF-8 setup for PowerShell
+        local utf8_setup = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " ..
+                          "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; " ..
+                          "$OutputEncoding = [System.Text.Encoding]::UTF8; " ..
+                          "$env:PYTHONUTF8='1'; " ..
+                          "$env:PYTHONIOENCODING='utf-8'; "
+        
+        -- Use -Raw flag with Get-Content to preserve exact bytes
+        local pipeline_command = string.format("Get-Content %s -Raw | %s", 
+                                             escapeShellArg(job_state.temp_file_path), 
+                                             llm_command_str)
+        
+        local full_robust_command = utf8_setup .. pipeline_command
+        cmd_args = {"-NoProfile", "-Command", full_robust_command}
+        
+        -- Alternative approach using cmd.exe (uncomment if PowerShell still has issues)
+        -- cmd_to_spawn = "cmd.exe"
+        -- local cmd_pipeline = string.format("type %s | %s", escapeShellArg(job_state.temp_file_path), llm_command_str)
+        -- cmd_args = {"/C", "chcp 65001 && " .. cmd_pipeline}
+    else
+        cmd_to_spawn = "bash"
+        local pipeline = string.format("cat %s | %s", escapeShellArg(job_state.temp_file_path), llm_command_str)
+        cmd_args = {"-c", pipeline}
+    end
+
+    job_state.original_command = cmd_to_spawn .. " " .. table.concat(cmd_args, " ")
+    micro.InfoBar():Message("LLM (" .. command_type_str .. "): Processing...")
+    micro.Log("LLM_DEBUG: Spawning command: " .. cmd_to_spawn)
+    micro.Log("LLM_DEBUG: With arguments: " .. table.concat(cmd_args, ", "))
+
+    local job, err = shell.JobSpawn(cmd_to_spawn, cmd_args, handleJobStdout, handleJobStderr, handleJobExit, {})
+    
     if err ~= nil then
-        micro.InfoBar():Message("ERROR: LLM: JobStart failed: "..tostring(err))
+        micro.InfoBar():Message("ERROR: LLM: JobSpawn failed: "..tostring(err))
         if job_state.temp_file_path then local p=job_state.temp_file_path; job_state.temp_file_path=nil; pcall(os.Remove,p); end
     elseif not job then
-        micro.InfoBar():Message("ERROR: LLM: JobStart nil job.")
+        micro.InfoBar():Message("ERROR: LLM: JobSpawn nil job.")
         if job_state.temp_file_path then local p=job_state.temp_file_path; job_state.temp_file_path=nil; pcall(os.Remove,p); end
     end
     micro.Log("LLM_DEBUG: LLM Job (" .. command_type_str .. ") initiated.")
